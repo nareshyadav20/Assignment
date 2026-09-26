@@ -1,0 +1,178 @@
+// Prisma Schema for Multi-Tenant Security Management Platform
+// Deep Trace Cybernetics Technical Assessment
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  USER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum EventSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum EventStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model Tenant {
+  id             String         @id @default(uuid())
+  name           String
+  slug           String         @unique
+  status         TenantStatus   @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  users          User[]
+  campaigns      Campaign[]
+  campaignUsers  CampaignUser[]
+  securityEvents SecurityEvent[]
+  auditLogs      AuditLog[]
+
+  @@index([slug])
+  @@index([status])
+  @@map("tenants")
+}
+
+model User {
+  id           String         @id @default(uuid())
+  tenantId     String
+  name         String
+  email        String
+  passwordHash String
+  role         Role           @default(USER)
+  status       UserStatus     @default(ACTIVE)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdCampaigns Campaign[]  @relation("CreatedByUser")
+  campaignAssignments CampaignUser[]
+  auditLogs    AuditLog[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model Campaign {
+  id          String         @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  status      CampaignStatus @default(DRAFT)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdById String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   User           @relation("CreatedByUser", fields: [createdById], references: [id], onDelete: Restrict)
+  assignments CampaignUser[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([status])
+  @@index([createdAt])
+  @@map("campaigns")
+}
+
+model CampaignUser {
+  id          String    @id @default(uuid())
+  tenantId    String
+  campaignId  String
+  userId      String
+  assignedAt  DateTime  @default(now())
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, userId])
+  @@index([tenantId])
+  @@index([campaignId])
+  @@index([userId])
+  @@map("campaign_users")
+}
+
+model SecurityEvent {
+  id          String        @id @default(uuid())
+  tenantId    String
+  eventType   String
+  severity    EventSeverity @default(LOW)
+  status      EventStatus   @default(OPEN)
+  description String
+  source      String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, severity])
+  @@index([tenantId, status])
+  @@index([severity])
+  @@index([status])
+  @@index([createdAt])
+  @@map("security_events")
+}
+
+model AuditLog {
+  id           String    @id @default(uuid())
+  tenantId     String
+  userId       String?
+  action       String
+  resourceType String
+  resourceId   String?
+  description  String
+  metadata     Json?
+  ipAddress    String?
+  createdAt    DateTime  @default(now())
+
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, action])
+  @@index([tenantId, resourceType])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
