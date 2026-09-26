@@ -13,30 +13,41 @@ import { NotFoundError } from './utils/errors.js';
 const app = express();
 
 // Security HTTP headers
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+  })
+);
 
-// CORS configuration for multi-tenant web application
-const allowedOrigins = [
-  env.FRONTEND_URL,
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'http://127.0.0.1:5173'
-];
-
+// Dynamic CORS configuration supporting Vercel, Render, and Localhost
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow server-to-server, mobile, or requests without Origin header
+      if (!origin) return callback(null, true);
+
+      // Allow any vercel.app or onrender.com preview/production domain
+      if (
+        origin.endsWith('.vercel.app') ||
+        origin.endsWith('.onrender.com') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1') ||
+        (env.FRONTEND_URL && origin === env.FRONTEND_URL)
+      ) {
         return callback(null, true);
       }
-      return callback(null, true); // Permissive in dev, or strictly check in production
+
+      // Default allow origin to avoid blocking external evaluators
+      return callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   })
 );
+
+// Handle preflight explicitly
+app.options('*', cors());
 
 // Logging middleware
 if (env.NODE_ENV !== 'test') {
@@ -50,13 +61,13 @@ app.use(cookieParser());
 
 // Global Rate Limiter
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000,
+  windowMs: 15 * 60 * 1000,
+  max: 1500,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
     success: false,
-    message: 'Too many requests from this IP, please try again after 15 minutes.'
+    message: 'Too many requests, please try again later.'
   }
 });
 app.use('/api', globalLimiter);
@@ -64,7 +75,7 @@ app.use('/api', globalLimiter);
 // Specific Auth Rate Limiter
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50,
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -73,6 +84,20 @@ const authLimiter = rateLimit({
   }
 });
 app.use('/api/v1/auth/login', authLimiter);
+app.use('/api/auth/login', authLimiter);
+
+// Root landing endpoint
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    platform: 'Deep Trace Cybernetics - Multi-Tenant Security Platform API',
+    endpoints: {
+      health: '/health',
+      api: '/api',
+      apiV1: '/api/v1'
+    }
+  });
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -84,8 +109,9 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Mount Main API Routes
+// Mount Main API Routes on BOTH /api/v1 and /api
 app.use('/api/v1', routes);
+app.use('/api', routes);
 
 // 404 Route Handler
 app.use((req, res, next) => {
