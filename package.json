@@ -1,0 +1,14 @@
+{
+  "name": "multi-tenant-security-platform-root",
+  "version": "1.0.0",
+  "description": "Multi-Tenant Security Operations Platform Monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "cd backend && npm install && npm run db:generate",
+    "build": "cd backend && npm install && npm run db:generate",
+    "start": "node backend/src/server.js",
+    "dev": "node backend/src/server.js",
+    "build:frontend": "cd frontend && npm install && npm run build"
+  }
+}
