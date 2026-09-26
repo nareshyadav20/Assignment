@@ -1,14 +1,22 @@
+import http from 'http';
 import app from './app.js';
 import { env } from './config/env.js';
 import prisma from './config/database.js';
+import { initSocket } from './services/socket.service.js';
 
 const PORT = env.PORT || 5000;
 
-const server = app.listen(PORT, async () => {
+const httpServer = http.createServer(app);
+
+// Initialize real-time WebSocket layer
+initSocket(httpServer);
+
+const server = httpServer.listen(PORT, async () => {
   console.log(`🚀 Multi-Tenant Security Platform API running on port ${PORT}`);
   console.log(`📡 Environment: ${env.NODE_ENV}`);
   console.log(`🔗 Health check available at: http://localhost:${PORT}/health`);
-  console.log(`🛡️  API Endpoints mounted at: http://localhost:${PORT}/api/v1`);
+  console.log(`🛡️  API Endpoints mounted at: http://localhost:${PORT}/api and /api/v1`);
+  console.log(`⚡ Socket.IO real-time telemetry active.`);
 
   try {
     await prisma.$connect();
@@ -22,7 +30,7 @@ const server = app.listen(PORT, async () => {
 const handleShutdown = async (signal) => {
   console.log(`\n🛑 Received ${signal}. Initiating graceful shutdown...`);
   server.close(async () => {
-    console.log('HTTP server closed.');
+    console.log('HTTP & WebSocket server closed.');
     await prisma.$disconnect();
     console.log('Database client disconnected.');
     process.exit(0);

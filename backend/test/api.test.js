@@ -202,16 +202,71 @@ describe('Multi-Tenant Security Platform API Tests', () => {
     });
   });
 
-  describe('Dashboard Aggregates', () => {
-    it('Should return isolated dashboard metrics for Tenant A', async () => {
+  describe('Dashboard Aggregates & Date Filtering', () => {
+    it('Should return isolated dashboard metrics for Tenant A with date filter and event trends', async () => {
       const res = await request(app)
-        .get('/api/v1/dashboard/overview')
+        .get('/api/v1/dashboard/overview?range=30d')
         .set('Authorization', `Bearer ${tokenTenantAAdmin}`);
 
       expect(res.status).toBe(200);
       expect(res.body.data.summary).toBeDefined();
       expect(res.body.data.summary.campaigns.total).toBeGreaterThan(0);
       expect(res.body.data.charts.eventsBySeverity).toBeDefined();
+      expect(res.body.data.charts.eventTrends).toBeDefined();
+    });
+
+    it('Should support /api route alias without /v1 prefix', async () => {
+      const res = await request(app)
+        .get('/api/dashboard/overview')
+        .set('Authorization', `Bearer ${tokenTenantAAdmin}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+  });
+
+  describe('User Security & Role Immutability', () => {
+    it('Should forbid a user from modifying their own role', async () => {
+      const meRes = await request(app)
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${tokenTenantAAdmin}`);
+
+      const myId = meRes.body.user.id;
+
+      const updateRes = await request(app)
+        .patch(`/api/v1/users/${myId}`)
+        .set('Authorization', `Bearer ${tokenTenantAAdmin}`)
+        .send({ role: 'USER' });
+
+      expect(updateRes.status).toBe(403);
+      expect(updateRes.body.message).toContain('cannot modify your own role');
+    });
+  });
+
+  describe('Security Events with Telemetry & Operator Assignment', () => {
+    it('Should create and retrieve a security incident with sourceIp and assigned operator', async () => {
+      const createRes = await request(app)
+        .post('/api/v1/events')
+        .set('Authorization', `Bearer ${tokenTenantAAdmin}`)
+        .send({
+          eventType: 'BRUTE_FORCE_SSH_ATTACK',
+          severity: 'CRITICAL',
+          status: 'OPEN',
+          description: 'Repeated authentication failures on bastion host.',
+          source: 'WAF Suricata',
+          sourceIp: '203.0.113.195'
+        });
+
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.data.sourceIp).toBe('203.0.113.195');
+
+      const eventId = createRes.body.data.id;
+      const getRes = await request(app)
+        .get(`/api/v1/events/${eventId}`)
+        .set('Authorization', `Bearer ${tokenTenantAAdmin}`);
+
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.data.sourceIp).toBe('203.0.113.195');
     });
   });
 });

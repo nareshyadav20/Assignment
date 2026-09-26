@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import prisma from '../config/database.js';
 import { NotFoundError, BadRequestError, ForbiddenError, ConflictError } from '../utils/errors.js';
 import { logAuditEvent } from '../services/audit.service.js';
+import { emitTenantEvent } from '../services/socket.service.js';
 
 export const listUsers = async (req, res, next) => {
   try {
@@ -9,7 +10,7 @@ export const listUsers = async (req, res, next) => {
     const skip = (page - 1) * limit;
 
     const where = {
-      tenantId: req.tenantId, // Isolated to tenant
+      tenantId: req.tenantId,
       ...(role && { role }),
       ...(status && { status }),
       ...(search && {
@@ -25,7 +26,7 @@ export const listUsers = async (req, res, next) => {
       prisma.user.findMany({
         where,
         skip,
-        take: limit,
+        take: Number(limit),
         orderBy: { [sortBy]: sortOrder },
         select: {
           id: true,
@@ -36,7 +37,7 @@ export const listUsers = async (req, res, next) => {
           createdAt: true,
           updatedAt: true,
           _count: {
-            select: { campaignAssignments: true }
+            select: { campaignAssignments: true, assignedEvents: true }
           }
         }
       })
@@ -46,8 +47,8 @@ export const listUsers = async (req, res, next) => {
       success: true,
       data: users,
       pagination: {
-        page,
-        limit,
+        page: Number(page),
+        limit: Number(limit),
         total,
         totalPages: Math.ceil(total / limit) || 1
       }
@@ -80,6 +81,9 @@ export const getUserById = async (req, res, next) => {
               select: { id: true, name: true, status: true }
             }
           }
+        },
+        assignedEvents: {
+          select: { id: true, eventType: true, severity: true, status: true }
         }
       }
     });
@@ -102,7 +106,6 @@ export const createUser = async (req, res, next) => {
     const { name, email, password, role = 'USER', status = 'ACTIVE' } = req.body;
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
 
-    // Check if email already exists within this tenant
     const existing = await prisma.user.findUnique({
       where: {
         tenantId_email: {
@@ -137,13 +140,16 @@ export const createUser = async (req, res, next) => {
       }
     });
 
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'USER_CREATED', newUser);
+
     await logAuditEvent({
       tenantId: req.tenantId,
       userId: req.user.id,
       action: 'USER_CREATE',
       resourceType: 'USER',
       resourceId: newUser.id,
-      description: `Created new user ${newUser.name} with role ${newUser.role}.`,
+      description: `Created new user ${newUser.name} (${newUser.email}) with role ${newUser.role}.`,
       ipAddress: clientIp,
       metadata: { role: newUser.role, email: newUser.email }
     });
@@ -164,6 +170,11 @@ export const updateUser = async (req, res, next) => {
     const { name, email, role, status, password } = req.body;
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
 
+    // Security check: users cannot modify their own role
+    if (id === req.user.id && role && role !== req.user.role) {
+      throw new ForbiddenError('Security rule: You cannot modify your own role.');
+    }
+
     const existing = await prisma.user.findFirst({
       where: { id, tenantId: req.tenantId }
     });
@@ -172,7 +183,6 @@ export const updateUser = async (req, res, next) => {
       throw new NotFoundError('User not found.');
     }
 
-    // Check email uniqueness if email is changed
     if (email && email.toLowerCase().trim() !== existing.email) {
       const emailConflict = await prisma.user.findUnique({
         where: {
@@ -211,13 +221,16 @@ export const updateUser = async (req, res, next) => {
       }
     });
 
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'USER_UPDATED', updated);
+
     await logAuditEvent({
       tenantId: req.tenantId,
       userId: req.user.id,
       action: 'USER_UPDATE',
       resourceType: 'USER',
       resourceId: id,
-      description: `Updated profile/role for user ${updated.name}.`,
+      description: `Updated profile/status for user ${updated.name}.`,
       ipAddress: clientIp,
       metadata: { role: updated.role, status: updated.status }
     });
@@ -252,6 +265,9 @@ export const deleteUser = async (req, res, next) => {
     await prisma.user.delete({
       where: { id }
     });
+
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'USER_DELETED', { id });
 
     await logAuditEvent({
       tenantId: req.tenantId,

@@ -81,6 +81,7 @@ model User {
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdCampaigns Campaign[]  @relation("CreatedByUser")
   campaignAssignments CampaignUser[]
+  assignedEvents SecurityEvent[] @relation("AssignedSecurityEvents")
   auditLogs    AuditLog[]
 
   @@unique([tenantId, email])
@@ -133,17 +134,20 @@ model CampaignUser {
 }
 
 model SecurityEvent {
-  id          String        @id @default(uuid())
-  tenantId    String
-  eventType   String
-  severity    EventSeverity @default(LOW)
-  status      EventStatus   @default(OPEN)
-  description String
-  source      String
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id             String        @id @default(uuid())
+  tenantId       String
+  eventType      String
+  severity       EventSeverity @default(LOW)
+  status         EventStatus   @default(OPEN)
+  description    String
+  source         String
+  sourceIp       String?
+  assignedUserId String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignedTo     User?         @relation("AssignedSecurityEvents", fields: [assignedUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([tenantId, severity])

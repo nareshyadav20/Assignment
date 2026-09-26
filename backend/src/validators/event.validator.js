@@ -9,7 +9,9 @@ export const createEventSchema = z.object({
     severity: severityEnum,
     status: eventStatusEnum.optional().default('OPEN'),
     description: z.string().min(3, 'Description is required').max(1000),
-    source: z.string().min(2, 'Source is required').max(100)
+    source: z.string().min(2, 'Source is required').max(100),
+    sourceIp: z.string().max(100).optional().nullable(),
+    assignedUserId: z.string().uuid().optional().nullable()
   })
 });
 
@@ -20,7 +22,8 @@ export const updateEventStatusSchema = z.object({
   body: z.object({
     status: eventStatusEnum.optional(),
     severity: severityEnum.optional(),
-    description: z.string().max(1000).optional()
+    description: z.string().max(1000).optional(),
+    assignedUserId: z.string().uuid().optional().nullable()
   })
 });
 
@@ -31,6 +34,7 @@ export const queryEventSchema = z.object({
     search: z.string().optional(),
     severity: severityEnum.optional(),
     status: eventStatusEnum.optional(),
-    eventType: z.string().optional()
+    eventType: z.string().optional(),
+    range: z.enum(['today', '7d', '30d']).optional()
   })
 });

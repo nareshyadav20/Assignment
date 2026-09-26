@@ -1,6 +1,28 @@
 import prisma from '../config/database.js';
 import { NotFoundError, BadRequestError, ConflictError } from '../utils/errors.js';
 import { logAuditEvent } from '../services/audit.service.js';
+import { emitTenantEvent } from '../services/socket.service.js';
+
+// Calculate realistic campaign progress
+const computeCampaignProgress = (campaign) => {
+  if (campaign.status === 'COMPLETED') return 100;
+  if (campaign.status === 'DRAFT' || campaign.status === 'CANCELLED') return 0;
+
+  if (campaign.startDate && campaign.endDate) {
+    const start = new Date(campaign.startDate).getTime();
+    const end = new Date(campaign.endDate).getTime();
+    const now = Date.now();
+
+    if (now <= start) return 5;
+    if (now >= end) return 95;
+    const elapsed = now - start;
+    const totalDuration = end - start;
+    const percent = Math.round((elapsed / totalDuration) * 90) + 5;
+    return Math.min(Math.max(percent, 5), 95);
+  }
+
+  return 25; // Default active baseline
+};
 
 export const listCampaigns = async (req, res, next) => {
   try {
@@ -23,7 +45,7 @@ export const listCampaigns = async (req, res, next) => {
       prisma.campaign.findMany({
         where,
         skip,
-        take: limit,
+        take: Number(limit),
         orderBy: { [sortBy]: sortOrder },
         include: {
           createdBy: {
@@ -43,12 +65,17 @@ export const listCampaigns = async (req, res, next) => {
       })
     ]);
 
+    const campaignsWithProgress = campaigns.map((c) => ({
+      ...c,
+      progress: computeCampaignProgress(c)
+    }));
+
     res.status(200).json({
       success: true,
-      data: campaigns,
+      data: campaignsWithProgress,
       pagination: {
-        page,
-        limit,
+        page: Number(page),
+        limit: Number(limit),
         total,
         totalPages: Math.ceil(total / limit) || 1
       }
@@ -65,7 +92,7 @@ export const getCampaignById = async (req, res, next) => {
     const campaign = await prisma.campaign.findFirst({
       where: {
         id,
-        tenantId: req.tenantId // Tenant isolation guard
+        tenantId: req.tenantId // Strict tenant isolation guard
       },
       include: {
         createdBy: {
@@ -87,7 +114,10 @@ export const getCampaignById = async (req, res, next) => {
 
     res.status(200).json({
       success: true,
-      data: campaign
+      data: {
+        ...campaign,
+        progress: computeCampaignProgress(campaign)
+      }
     });
   } catch (error) {
     next(error);
@@ -116,6 +146,9 @@ export const createCampaign = async (req, res, next) => {
       }
     });
 
+    // Real-Time Socket Broadcast strictly to tenant
+    emitTenantEvent(req.tenantId, 'CAMPAIGN_CREATED', campaign);
+
     await logAuditEvent({
       tenantId: req.tenantId,
       userId: req.user.id,
@@ -130,7 +163,10 @@ export const createCampaign = async (req, res, next) => {
     res.status(201).json({
       success: true,
       message: 'Campaign created successfully',
-      data: campaign
+      data: {
+        ...campaign,
+        progress: computeCampaignProgress(campaign)
+      }
     });
   } catch (error) {
     next(error);
@@ -143,7 +179,6 @@ export const updateCampaign = async (req, res, next) => {
     const { name, description, status, startDate, endDate } = req.body;
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
 
-    // Verify campaign belongs to tenant
     const existing = await prisma.campaign.findFirst({
       where: { id, tenantId: req.tenantId }
     });
@@ -160,8 +195,23 @@ export const updateCampaign = async (req, res, next) => {
         ...(status !== undefined && { status }),
         ...(startDate !== undefined && { startDate: startDate ? new Date(startDate) : null }),
         ...(endDate !== undefined && { endDate: endDate ? new Date(endDate) : null })
+      },
+      include: {
+        createdBy: {
+          select: { id: true, name: true, email: true, role: true }
+        },
+        assignments: {
+          include: {
+            user: {
+              select: { id: true, name: true, email: true, role: true }
+            }
+          }
+        }
       }
     });
+
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'CAMPAIGN_UPDATED', updated);
 
     await logAuditEvent({
       tenantId: req.tenantId,
@@ -169,7 +219,7 @@ export const updateCampaign = async (req, res, next) => {
       action: 'CAMPAIGN_UPDATE',
       resourceType: 'CAMPAIGN',
       resourceId: id,
-      description: `Updated campaign '${updated.name}'.`,
+      description: `Updated campaign '${updated.name}' status to ${updated.status}.`,
       ipAddress: clientIp,
       metadata: { previousStatus: existing.status, newStatus: updated.status }
     });
@@ -177,7 +227,10 @@ export const updateCampaign = async (req, res, next) => {
     res.status(200).json({
       success: true,
       message: 'Campaign updated successfully',
-      data: updated
+      data: {
+        ...updated,
+        progress: computeCampaignProgress(updated)
+      }
     });
   } catch (error) {
     next(error);
@@ -200,6 +253,9 @@ export const deleteCampaign = async (req, res, next) => {
     await prisma.campaign.delete({
       where: { id }
     });
+
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'CAMPAIGN_DELETED', { id });
 
     await logAuditEvent({
       tenantId: req.tenantId,
@@ -226,7 +282,6 @@ export const assignUserToCampaign = async (req, res, next) => {
     const { userId } = req.body;
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
 
-    // Check campaign belongs to tenant
     const campaign = await prisma.campaign.findFirst({
       where: { id, tenantId: req.tenantId }
     });
@@ -242,7 +297,6 @@ export const assignUserToCampaign = async (req, res, next) => {
       throw new NotFoundError('User not found in your organization.');
     }
 
-    // Check existing assignment
     const existing = await prisma.campaignUser.findUnique({
       where: {
         campaignId_userId: {
@@ -273,6 +327,9 @@ export const assignUserToCampaign = async (req, res, next) => {
       }
     });
 
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'CAMPAIGN_MEMBER_ASSIGNED', { campaignId: id, userId });
+
     await logAuditEvent({
       tenantId: req.tenantId,
       userId: req.user.id,
@@ -299,7 +356,6 @@ export const removeUserFromCampaign = async (req, res, next) => {
     const { id, userId } = req.params;
     const clientIp = req.ip || req.headers['x-forwarded-for'] || req.socket?.remoteAddress;
 
-    // Check campaign belongs to tenant
     const campaign = await prisma.campaign.findFirst({
       where: { id, tenantId: req.tenantId }
     });
@@ -329,13 +385,16 @@ export const removeUserFromCampaign = async (req, res, next) => {
       }
     });
 
+    // Real-Time Socket Broadcast
+    emitTenantEvent(req.tenantId, 'CAMPAIGN_MEMBER_REMOVED', { campaignId: id, userId });
+
     await logAuditEvent({
       tenantId: req.tenantId,
       userId: req.user.id,
       action: 'CAMPAIGN_MEMBER_REMOVE',
       resourceType: 'CAMPAIGN',
       resourceId: id,
-      description: `Removed user ${userId} from campaign '${campaign.name}'.`,
+      description: `Removed user from campaign '${campaign.name}'.`,
       ipAddress: clientIp,
       metadata: { campaignId: id, userId }
     });
